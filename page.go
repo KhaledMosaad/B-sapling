@@ -1,11 +1,17 @@
 package sapling
 
+import (
+	"encoding/binary"
+	"log"
+)
+
 const HEADER_SIZE = 16
 
 type PageType uint8
 
 const (
-	INTERNAL_PAGE PageType = 1 << iota // 00000001
+	ROOT_PAGE PageType = 1 << iota // 00000001
+	INTERNAL_PAGE
 	LEAF_PAGE
 )
 
@@ -30,7 +36,8 @@ const (
  */
 type page struct {
 	header   header
-	pointers []pointers
+	pointers []pointer
+	// TODO: Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
 	// For the internal cells the valueSize must be 4 and the value must be valid pageID
 	cells []cell
 }
@@ -47,8 +54,8 @@ type header struct {
 	reserved [5]byte // 5
 }
 
-type pointers struct { // 3
-	offset uint8
+type pointer struct { // 4
+	offset uint16
 	length uint16
 }
 
@@ -61,23 +68,121 @@ type cell struct {
 }
 
 // write (create, update) the page in disk using Little endian byte order
-func (p *page) write(db *BTree) (bool, error) {
-	// TODO: declare array of bytes with db.pageSize size
-	// TODO: Add header, pointers, cells (at the end) to that array
-	// TODO: flush this array of bytes into the disk
-	// Take care if the page is updated not a new page
-	// p.pointers come with the write offset of it's cell this is can be done on the toPage Node function
-	// Do we need to sync the file on each page flush? or vacuum process to do so?
-	// Do we need to separate the write from update?
-	return false, nil
+func (p *page) flush(db *BTree) (bool, error) {
+	buff := make([]byte, db.pageSize)
+
+	pageOffset := int64(p.header.pageID * uint32(db.pageSize))
+
+	// assign header
+	offset := 0
+
+	binary.LittleEndian.PutUint32(buff[offset:], p.header.pageID)
+	offset += 4
+
+	binary.LittleEndian.PutUint16(buff[offset:], p.header.freeStart)
+	offset += 2
+
+	binary.LittleEndian.PutUint16(buff[offset:], p.header.freeEnd)
+	offset += 2
+
+	binary.LittleEndian.PutUint16(buff[offset:], p.header.cellCount)
+	offset += 2
+
+	buff[offset] = byte(p.header.typ)
+	offset += 6 // 1 for typ + 5 reserved
+
+	// The update/insert will rewrite the whole page
+	// pointers grows down the page (from the start to the end)
+	// calculate them in the Node.toPage function, the pointer offset will be internally offset
+	endOffset := db.pageSize
+	for i := 0; i < len(p.pointers); i++ {
+		pointer := p.pointers[i]
+
+		// Add the pointer offset and length to the buffer
+		binary.LittleEndian.PutUint16(buff[offset:], pointer.offset)
+		offset += 2
+		binary.LittleEndian.PutUint16(buff[offset:], pointer.length)
+		offset += 2
+
+		// Add cell to the buffer based on the pointer
+		// TODO: I AM HERE
+		endOffset -= int(pointer.length)
+		cellOffset := endOffset
+		binary.LittleEndian.PutUint16(buff[cellOffset:], p.cells[i].keySize)
+		cellOffset += 2
+		binary.LittleEndian.PutUint16(buff[cellOffset:], p.cells[i].valueSize)
+		cellOffset += 2
+		copy(buff[cellOffset:], p.cells[i].key)
+		cellOffset += int(p.cells[i].keySize)
+		copy(buff[cellOffset:], p.cells[i].value)
+	}
+	// TODO: Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
+
+	// n, err := buff.WriteTo(db.file)
+	n, err := db.file.WriteAt(buff, pageOffset)
+	if err != nil {
+		return false, err
+	}
+
+	log.Printf("written %v bytes to disk at pageID %v", n, p.header.pageID)
+	return true, nil
 }
 
 // Read page from disk
 func read(db *BTree, pid uint32) (*page, error) {
-	// TODO: get the offset from the disk file using the page id p.pageID
+	poffset := getPageOffset(pid, uint64(db.pageSize))
 
-	// TODO: Assign the values into new in memory page and return it (same reference)
-	return nil, nil
+	buff := make([]byte, db.pageSize)
+	_, err := db.file.ReadAt(buff, int64(poffset))
+
+	if err != nil {
+		return nil, err
+	}
+
+	page := &page{}
+	offset := 0
+
+	// Page Header reading
+	page.header.pageID = binary.LittleEndian.Uint32(buff[offset:])
+	offset += 4
+	page.header.freeStart = binary.LittleEndian.Uint16(buff[offset:])
+	offset += 2
+	page.header.freeEnd = binary.LittleEndian.Uint16(buff[offset:])
+	offset += 2
+	page.header.cellCount = binary.LittleEndian.Uint16(buff[offset:])
+	offset += 2
+	page.header.typ = PageType(buff[offset])
+	offset += 6 // typ = 1 , reserved = 5
+
+	// append cells and pointers
+	for offset < int(page.header.freeStart) {
+		// append pointer
+		point := pointer{}
+		point.offset = binary.LittleEndian.Uint16(buff[offset:])
+		offset += 2
+		point.length = binary.LittleEndian.Uint16(buff[offset+2:])
+		offset += 2
+		page.pointers = append(page.pointers, point)
+
+		// append cell
+		cell := cell{}
+
+		cellOffset := point.offset
+		cell.keySize = binary.LittleEndian.Uint16(buff[cellOffset:])
+		cellOffset += 2
+		cell.valueSize = binary.LittleEndian.Uint16(buff[cellOffset:])
+		cellOffset += 2
+
+		cell.key = buff[cellOffset : cellOffset+cell.keySize]
+
+		cellOffset += cell.keySize
+		cell.value = buff[cellOffset : cellOffset+cell.valueSize]
+
+		page.cells = append(page.cells, cell)
+	}
+	// TODO: Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
+
+	return page, nil
 }
 
 // remove page from db
@@ -88,6 +193,21 @@ func (p *page) remove(db *BTree) error {
 
 // convert the current page to node (in-memory structure)
 func (p *page) toNode() (*node, error) {
-	// TODO: Convert the p of type page to node to facilitate the in memory usage
-	return nil, nil
+	node := &node{
+		ID:     p.header.pageID,
+		typ:    convertPageTypeToNodeType(p.header.typ),
+		parent: nil,
+		dirty:  false,
+		pairs:  make([]pair, len(p.cells)),
+	}
+
+	for i := 0; i < len(p.cells); i++ {
+		pair := pair{
+			key:   string(p.cells[i].key),
+			value: string(p.cells[i].value),
+		}
+
+		node.pairs[i] = pair
+	}
+	return node, nil
 }
