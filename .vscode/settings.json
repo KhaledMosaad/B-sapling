@@ -1,0 +1,28 @@
+{
+  "todohighlight.keywords": [
+    {
+      "text": "FIXME",
+      "color": "#FF0000",
+      "backgroundColor": "transparent",
+      "overviewRulerColor": "#FF0000"
+    },
+    {
+      "text": "OPTIMIZE",
+      "color": "#FFA500",
+      "backgroundColor": "transparent",
+      "overviewRulerColor": "#FFA500"
+    },
+    {
+      "text": "PAGES",
+      "color": "#00BFFF",
+      "backgroundColor": "transparent",
+      "overviewRulerColor": "#00BFFF"
+    },
+    {
+      "text": "NODES",
+      "color": "#A0AFFF",
+      "backgroundColor": "transparent",
+      "overviewRulerColor": "#A0AFFF"
+    }
+  ]
+}
