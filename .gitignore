@@ -17,7 +17,7 @@ coverage.*
 *.coverprofile
 profile.cov
 
-db/
+local/
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
