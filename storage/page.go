@@ -1,8 +1,10 @@
-package sapling
+package storage
 
 import (
 	"encoding/binary"
 	"log"
+
+	"github.com/KhaledMosaad/B-sapling/utils"
 )
 
 const HEADER_SIZE = 16
@@ -37,12 +39,12 @@ const (
 type page struct {
 	header   header
 	pointers []pointer
-	// TODO: Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
 	// For the internal cells the valueSize must be 4 and the value must be valid pageID
 	cells []cell
+	// This is only applied for non-leaf nodes, will be taken from nodes.children[len(nodes.children)-1]
+	rightMostRef *uint32
 }
 
-// TODO: add checksum value to the page header
 type header struct {
 	// PAGE HEADER 16 Byte
 	pageID    uint32   // 4
@@ -54,7 +56,7 @@ type header struct {
 	reserved [5]byte // 5
 }
 
-type pointer struct { // 4
+type pointer struct {
 	offset uint16
 	length uint16
 }
@@ -68,10 +70,10 @@ type cell struct {
 }
 
 // write (create, update) the page in disk using Little endian byte order
-func (p *page) flush(db *BTree) (bool, error) {
-	buff := make([]byte, db.pageSize)
+func (p *page) flush(mng *Manager) (bool, error) {
+	buff := make([]byte, mng.PageSize)
 
-	pageOffset := int64(p.header.pageID * uint32(db.pageSize))
+	pageOffset := int64(p.header.pageID * uint32(mng.PageSize))
 
 	// assign header
 	offset := 0
@@ -94,7 +96,7 @@ func (p *page) flush(db *BTree) (bool, error) {
 	// The update/insert will rewrite the whole page
 	// pointers grows down the page (from the start to the end)
 	// calculate them in the Node.toPage function, the pointer offset will be internally offset
-	endOffset := db.pageSize
+	endOffset := mng.PageSize
 	for i := 0; i < len(p.pointers); i++ {
 		pointer := p.pointers[i]
 
@@ -105,7 +107,6 @@ func (p *page) flush(db *BTree) (bool, error) {
 		offset += 2
 
 		// Add cell to the buffer based on the pointer
-		// TODO: I AM HERE
 		endOffset -= int(pointer.length)
 		cellOffset := endOffset
 		binary.LittleEndian.PutUint16(buff[cellOffset:], p.cells[i].keySize)
@@ -116,10 +117,15 @@ func (p *page) flush(db *BTree) (bool, error) {
 		cellOffset += int(p.cells[i].keySize)
 		copy(buff[cellOffset:], p.cells[i].value)
 	}
-	// TODO: Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
 
-	// n, err := buff.WriteTo(db.file)
-	n, err := db.file.WriteAt(buff, pageOffset)
+	// Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
+	if p.header.typ&INTERNAL_PAGE == INTERNAL_PAGE {
+		// the right most reference has 4 bytes length
+		endOffset -= 4
+		binary.LittleEndian.PutUint32(buff[endOffset:], *p.rightMostRef)
+	}
+
+	n, err := mng.file.WriteAt(buff, pageOffset)
 	if err != nil {
 		return false, err
 	}
@@ -129,11 +135,11 @@ func (p *page) flush(db *BTree) (bool, error) {
 }
 
 // Read page from disk
-func read(db *BTree, pid uint32) (*page, error) {
-	poffset := getPageOffset(pid, uint64(db.pageSize))
+func read(mng *Manager, pid uint32) (*page, error) {
+	poffset := utils.GetPageOffset(pid, uint64(mng.PageSize))
 
-	buff := make([]byte, db.pageSize)
-	_, err := db.file.ReadAt(buff, int64(poffset))
+	buff := make([]byte, mng.PageSize)
+	_, err := mng.file.ReadAt(buff, int64(poffset))
 
 	if err != nil {
 		return nil, err
@@ -160,7 +166,7 @@ func read(db *BTree, pid uint32) (*page, error) {
 		point := pointer{}
 		point.offset = binary.LittleEndian.Uint16(buff[offset:])
 		offset += 2
-		point.length = binary.LittleEndian.Uint16(buff[offset+2:])
+		point.length = binary.LittleEndian.Uint16(buff[offset:])
 		offset += 2
 		page.pointers = append(page.pointers, point)
 
@@ -180,34 +186,57 @@ func read(db *BTree, pid uint32) (*page, error) {
 
 		page.cells = append(page.cells, cell)
 	}
-	// TODO: Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
 
+	// Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
+	// Any read internal page should fetch the right most value
+	if page.header.typ&INTERNAL_PAGE == INTERNAL_PAGE {
+		temp := binary.LittleEndian.Uint32(buff[page.header.freeEnd:])
+		page.rightMostRef = &temp
+	}
+
+	log.Printf("read page %v from disk", page.header.pageID)
 	return page, nil
 }
 
 // remove page from db
-func (p *page) remove(db *BTree) error {
+func (p *page) remove(mng *Manager) error {
 	// TODO: remove the page from disk, add proper handling for the page ids handling
+	// This can be done when implementing file header to reference the unused pages
 	return nil
 }
 
 // convert the current page to node (in-memory structure)
-func (p *page) toNode() (*node, error) {
-	node := &node{
-		ID:     p.header.pageID,
-		typ:    convertPageTypeToNodeType(p.header.typ),
-		parent: nil,
-		dirty:  false,
-		pairs:  make([]pair, len(p.cells)),
+func (p *page) toNode() (*Node, error) {
+	nod := &Node{
+		ID:         p.header.pageID,
+		Typ:        NodeType(p.header.typ),
+		Parent:     nil,
+		Dirty:      false,
+		Pairs:      make([]Pair, len(p.cells)),
+		FreeLength: int(p.header.freeEnd - p.header.freeStart),
+	}
+
+	if (nod.Typ & INTERNAL_NODE) == INTERNAL_NODE {
+		// assert that the p.rightMostRef is not nil or 0
+		nod.Children = make([]*Node, len(p.cells)+1)
+		nod.Children[len(p.cells)] = &Node{ID: *p.rightMostRef}
 	}
 
 	for i := 0; i < len(p.cells); i++ {
-		pair := pair{
-			key:   string(p.cells[i].key),
-			value: string(p.cells[i].value),
+		pair := Pair{
+			Key:   p.cells[i].key,
+			Value: p.cells[i].value,
 		}
+		nod.Pairs[i] = pair
 
-		node.pairs[i] = pair
+		// internal nodes should have value of uint32 as a reference for the child page
+		// FIXME: What if they already exist in the memory? This need to be handled on the eviction policy
+		// Most of the time it won't be exist but just incase, we need to handle this
+		if (nod.Typ & INTERNAL_NODE) == INTERNAL_NODE {
+			nod.Children[i] = &Node{
+				ID: binary.LittleEndian.Uint32(pair.Value),
+			}
+		}
 	}
-	return node, nil
+	return nod, nil
 }
