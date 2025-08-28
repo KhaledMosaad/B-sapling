@@ -10,10 +10,25 @@ import (
 func main() {
 	fmt.Println(os.Getpagesize())
 
-	_, err := sapling.Open("./db/fast.db")
+	db, err := sapling.Open("./local/fast.db")
 
 	if err != nil {
 		panic(err)
 	}
+
+	defer db.Close()
+
+	_, _, err = db.Upsert([]byte("My key 165"), []byte("My val 165"))
+	if err != nil {
+		panic(err)
+	}
+
+	val, err := db.Find([]byte("My key 165"))
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(string(val))
 
 }
