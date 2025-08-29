@@ -27,8 +27,13 @@ type BTree struct {
 
 var _ db.DB = &BTree{}
 
-// Initialize the database
+// Initialize the database, It will create the database file if not exists
 func Open(path string) (*BTree, error) {
+	// default value
+	if path == "" {
+		path = "./local/fast.db"
+	}
+
 	b := &BTree{}
 	b.wlock.Lock()
 	defer b.wlock.Unlock()
@@ -48,7 +53,7 @@ func Open(path string) (*BTree, error) {
 }
 
 // Set node will find the node that will be the parent and insert new node to it then write it as a page
-// return success, splitted, error
+// return success, split , error
 func (b *BTree) Upsert(key []byte, value []byte) (bool, bool, error) {
 	// TODO: key and value must be under min(65535 (max(uint16)), b.pageSize) bytes
 	if !b.open {

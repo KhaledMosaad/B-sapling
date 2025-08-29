@@ -2,8 +2,10 @@ package storage
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"syscall"
 )
@@ -27,11 +29,19 @@ var _ StorageManager = &Manager{}
 
 // A new Manager return mnger, root, error
 func NewManager(pageSize int, path string, nodeCount *atomic.Uint32) (*Manager, *Node, error) {
+	// cleaning the path and getting it's shortest path
+	path = filepath.Clean(path)
+
 	mng := &Manager{
 		path:     path,
 		PageSize: pageSize,
 	}
-	var err error = nil
+
+	dir := filepath.Dir(path)
+	err := os.MkdirAll(dir, os.ModePerm)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create path's directory: %v", err)
+	}
 
 	// Open file with O_DIRECT to bypass the kernel cache/write-back ...
 	mng.file, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_DIRECT, 0644)
@@ -58,29 +68,29 @@ func NewManager(pageSize int, path string, nodeCount *atomic.Uint32) (*Manager, 
 
 		rootPage, err := root.page(mng.PageSize)
 		if err != nil {
-			panic(err)
+			return nil, nil, fmt.Errorf("Error while converting node to page: %v", err)
 		}
 		_, err = rootPage.flush(mng)
 
 		if err != nil {
-			panic(err)
+			return nil, nil, fmt.Errorf("Error while flushing the root page to the disk: %v", err)
 		}
 		nodeCount.Store(1)
 		return mng, root, nil
 	}
 
 	if err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("Error while reading the root page: %v", err)
 	}
 
 	root, err := rootPage.toNode()
 	if err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("Error while converting the root page to node: %v", err)
 	}
 
 	fi, err := mng.file.Stat()
 	if err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("Error while reading the file statistics: %v", err)
 	}
 
 	nodeCount.Store(uint32(fi.Size() / int64(mng.PageSize)))
