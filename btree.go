@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"slices"
 	"sync"
@@ -119,31 +120,29 @@ func (b *BTree) findNode(key []byte) (*storage.Node, int, bool, error) {
 	found := false
 
 	for {
-		// read the node if it's not fetched from disk yet and convert it to node
-		if len(node.Pairs) == 0 {
-			var err error = nil
-			node, err = b.mng.Read(node.ID)
-			if err != nil {
-				return nil, -1, false, err
-			}
-		}
-
+		// do the binary search on the current node
 		pos, found = slices.BinarySearchFunc(node.Pairs, targetPair, func(x, k storage.Pair) int {
 			return bytes.Compare(x.Key, k.Key)
 		})
 
-		// FIXME: The value is not set if the found node is leaf but not the root
-		if (node.Typ & storage.INTERNAL_NODE) == storage.INTERNAL_NODE {
-			// this is safe because node.children length = pairs length + right most reference
-			// and every internal node fetched from disk have a non-nil children filled with node.ID value
-			node.Children[pos].Parent = node
-			node = node.Children[pos]
-		}
-
 		// base case is to reach a leaf node return early because either we found the target or not found and have a position to insert it
+		log.Println("Node done binary:", node.ID, node.Parent, node.Typ)
 		if (node.Typ & storage.LEAF_NODE) == storage.LEAF_NODE {
 			break
 		}
+
+		// read the node if it's not fetched from disk yet and convert it to node
+		// root node always live in the memory
+		if len(node.Children[pos].Pairs) == 0 {
+			var err error = nil
+			node.Children[pos], err = b.mng.Read(node.Children[pos].ID)
+			if err != nil {
+				return nil, -1, false, err
+			}
+
+			node.Children[pos].Parent = node
+		}
+		node = node.Children[pos]
 	}
 
 	return node, pos, found, nil

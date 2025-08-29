@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"syscall"
+
+	"github.com/kr/pretty"
 )
 
 type StorageManager interface {
@@ -108,6 +111,8 @@ func (mng *Manager) Read(nid uint32) (*Node, error) {
 	}
 
 	node, err := page.toNode()
+
+	log.Println("Read Node: %# v", pretty.Formatter(node))
 	if err != nil {
 		return nil, err
 	}
