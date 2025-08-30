@@ -40,7 +40,10 @@ B-sapling is a small feature-free lack-of-concurrency raw-based in-disk slotted 
 - [x] Low level Design of the BTree, Page and Node structsJus, t a dump design for now
 - [x] Implement the basic functionality, upsert/get/open/close
 - [x] Implement split function on overflow pages/upsert
-- [ ] WIP: Add Unit Tests
+- [ ] WIP: Add Unit Tests along side with assertion
+  - [ ] BTree
+  - [ ] Nodes
+  - [ ] Pages
 - [x] Vacuum to flush the pages in the disk by close, WIP: (time, resources)
 - [ ] Implement the remove path
 - [ ] Implement merge/rebalance on underflow pages/remove
@@ -50,5 +53,6 @@ B-sapling is a small feature-free lack-of-concurrency raw-based in-disk slotted 
 - [ ] Maintenance process to reclaim the wasted spaces in the pages because of delete operation (defragmentation)
 - [ ] Add logging, mentoring, observation
 - [ ] Add WAL file, maybe WAL2?
+- [ ] Add Range queries
 - [ ] Handle cache eviction process on the root field from btree struct (root page can't be evicted from cache)
 - [ ] Add concurrent processing, how to deal with different threads read/write operations
