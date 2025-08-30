@@ -193,8 +193,6 @@ func read(mng *Manager, pid uint32) (*page, error) {
 		temp := binary.LittleEndian.Uint32(buff[page.header.freeEnd:])
 		page.rightMostRef = &temp
 	}
-
-	log.Printf("read page %v from disk", page.header.pageID)
 	return page, nil
 }
 

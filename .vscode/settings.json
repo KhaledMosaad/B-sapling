@@ -23,6 +23,19 @@
       "color": "#A0AFFF",
       "backgroundColor": "transparent",
       "overviewRulerColor": "#A0AFFF"
+    },
+    {
+      "text": "REMOVE",
+      "color": "#A0AFFF",
+      "backgroundColor": "transparent",
+      "overviewRulerColor": "#A0AFFF"
+    },
+    {
+      "text": "ASSERT",
+      "color": "#FFA500",
+      "backgroundColor": "transparent",
+      "overviewRulerColor": "#FFA500"
     }
-  ]
+  ],
+  "cSpell.words": ["lnode", "lpairs", "rnode", "rpairs"]
 }
