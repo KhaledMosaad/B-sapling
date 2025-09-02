@@ -3,8 +3,13 @@ package storage
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"log"
 	"slices"
+	"strings"
 	"sync/atomic"
+
+	"github.com/nikoksr/assert-go"
 )
 
 type NodeType uint8
@@ -58,6 +63,8 @@ func (n *Node) page(pageSize int) (*page, error) {
 		// 2 bytes for keySize +  2 bytes for ValueSize + keySize + valueSize
 		keySize := uint16(len(n.Pairs[i].Key))
 		valueSize := uint16(len(n.Pairs[i].Value))
+		assert.Assert(keySize > 0, fmt.Sprintf("Key must have value node: %# v", n))
+		assert.Assert(valueSize > 0, fmt.Sprintf("Value must have value node: %# v", n))
 		cellSize := 2 + 2 + keySize + valueSize
 		page.cells[i] = cell{
 			keySize:   keySize,
@@ -77,6 +84,8 @@ func (n *Node) page(pageSize int) (*page, error) {
 	if (n.Typ & INTERNAL_NODE) == INTERNAL_NODE {
 		// Internal pages handling for right most reference
 		// assert the children > pairs by one
+		assert.Assert(len(n.Children) == len(n.Pairs)+1,
+			fmt.Sprintf("RightMostRef: Internal nodes must have children len more than pairs len by 1 %# v %d %d", n, len(n.Children), len(n.Pairs)))
 		endOffset -= 4
 		page.rightMostRef = &n.Children[len(n.Pairs)].ID
 	}
@@ -90,6 +99,8 @@ func (n *Node) page(pageSize int) (*page, error) {
 // the root node will have only one value, and the rest will split their values between new nodes
 // and adding a rightMostRef to the root to point the new left node
 func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node, error) {
+	// Assert the input
+	assert.Assert(n.FreeLength < 0, fmt.Sprintf("Split happening on a free spaced node is forbidden %# v", n))
 	// Root node case
 	if n.Typ&ROOT_NODE == ROOT_NODE {
 		// we don't have rightMostRef here but n will end up with one
@@ -119,7 +130,7 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 
 		// if the root node is internal and have to split then insert new two internal nodes between root and it's children
 		if n.Typ&INTERNAL_NODE == INTERNAL_NODE {
-			lnode.Children = n.Children[0:midpoint]
+			lnode.Children = n.Children[0 : midpoint+1]
 			lnode.Typ = INTERNAL_NODE
 
 			rnode.Children = n.Children[midpoint:]
@@ -140,7 +151,12 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 		binary.LittleEndian.PutUint32(newValue, lnode.ID)
 		n.Pairs = []Pair{{newKey, newValue}}
 	} else {
+		if n.Typ&INTERNAL_NODE == INTERNAL_NODE {
+			assert.Assert(len(n.Children) == len(n.Pairs)+1,
+				fmt.Sprintf("Internal node must have more children than pairs by 1 node: %# v  %d %d", n, len(n.Children), len(n.Pairs)))
+		}
 		// having an internal or leaf node we need to add a sibling node that holds half of n and add it's reference to the parent node
+		// Example:
 		parent := n.Parent
 		pairs := slices.Clone(n.Pairs)
 		midpoint := len(pairs) / 2
@@ -166,7 +182,7 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 			// The right most reference size in bytes for internal pages only
 			rnode.FreeLength -= 4
 
-			n.Children = n.Children[0:midpoint]
+			n.Children = n.Children[0 : midpoint+1]
 		}
 
 		// Do binary search to get the insertion point of the mid pairs
@@ -176,12 +192,13 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 		})
 
 		parent.Pairs = slices.Insert(parent.Pairs, pos, pairs[midpoint])
-		// ASSERT: this is should be ok for when parent is internal node must be always true (have one more child than its pairs)
+
+		assert.Assert(parent.Typ&INTERNAL_NODE == INTERNAL_NODE,
+			fmt.Sprintf("Splitting non-root node must have internal parent type parent: %# v node: %# v", parent, n))
 		parent.Children = slices.Insert(parent.Children, pos, rnode)
 		parent.Dirty = true
 		parent.FreeLength -= accumulatePairLength([]Pair{pairs[midpoint]}, 0)
 
-		// ASSERT: the split happen after the insertion
 		if parent.FreeLength < 0 {
 			parent.Split(root, nodeCount, pageSize)
 		}
@@ -206,4 +223,35 @@ func accumulatePairLength(s []Pair, initial int) int {
 		result += len(p.Key) + len(p.Value)
 	}
 	return result
+}
+
+func (n *Node) Print() error {
+	builder := strings.Builder{}
+
+	builder.WriteString(fmt.Sprintf("Node Id %d", n.ID))
+	if n.Parent != nil {
+		builder.WriteString(fmt.Sprintf(" Parent Id %d", n.Parent.ID))
+	}
+
+	builder.WriteString(" type: ")
+	builder.WriteByte(byte(n.Typ))
+	builder.WriteString("\n")
+	for _, pair := range n.Pairs {
+		builder.WriteString(" Key: ")
+		builder.Write(pair.Key)
+		builder.WriteString(" Value: ")
+		if n.Typ&INTERNAL_NODE == INTERNAL_NODE {
+			value := binary.LittleEndian.Uint32(pair.Value)
+			builder.WriteString(fmt.Sprintf("Child Id %v", value))
+		} else {
+			builder.Write(pair.Value)
+		}
+
+		builder.WriteString("\n")
+	}
+
+	printedNode := builder.String()
+	log.Printf("Node Print %v  \n", printedNode)
+
+	return nil
 }

@@ -160,6 +160,7 @@ func read(mng *Manager, pid uint32) (*page, error) {
 	page.header.typ = PageType(buff[offset])
 	offset += 6 // typ = 1 , reserved = 5
 
+	// FIXME: Pre initialize the pointers and cells slices from cellsCount
 	// append cells and pointers
 	for offset < int(page.header.freeStart) {
 		// append pointer

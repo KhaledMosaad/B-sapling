@@ -4,6 +4,8 @@ go 1.24.6
 
 require github.com/stretchr/testify v1.11.1
 
+require github.com/nikoksr/assert-go v0.4.1 // indirect
+
 require (
 	github.com/BurntSushi/toml v1.4.1-0.20240526193622-a339e1f7089c // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
