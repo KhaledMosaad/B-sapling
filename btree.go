@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"slices"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/KhaledMosaad/B-sapling/db"
 	"github.com/KhaledMosaad/B-sapling/storage"
 	"github.com/nikoksr/assert-go"
+	"github.com/rs/zerolog/log"
 )
 
 // This is the orchestrator object of the Database
@@ -57,7 +57,6 @@ func Open(path string) (*BTree, error) {
 // Set node will find the node that will be the parent and insert new node to it then write it as a page
 // return success, split , error
 func (b *BTree) Upsert(key []byte, value []byte) (bool, bool, error) {
-	// TODO: key and value must be under min(65535 (max(uint16)), b.pageSize) bytes
 	assert.Assert(len(key) > 0 && len(key) < 65530, fmt.Sprintf("The key length must be between 0 - 65530 key: %v value: %v", string(key), string(value)))
 	assert.Assert(len(value) > 0 && len(value) < 65530, fmt.Sprintf("The value length must be between 0 - 65530 key: %v value: %v", string(key), string(value)))
 	if !b.open {
@@ -75,7 +74,7 @@ func (b *BTree) Upsert(key []byte, value []byte) (bool, bool, error) {
 
 	if found {
 		// Do update and return
-		node.FreeLength += len(node.Pairs[pos].Value) - len(value)
+		node.FreeLength += (len(node.Pairs[pos].Value) - len(value))
 		node.Pairs[pos].Value = value
 		node.Dirty = true
 		if node.FreeLength < 0 {
@@ -92,18 +91,19 @@ func (b *BTree) Upsert(key []byte, value []byte) (bool, bool, error) {
 	// Should pairs be linked list to insert in o(1) instead of coping to a new array
 	pair := storage.Pair{Key: key, Value: value}
 	node.Pairs = slices.Insert(node.Pairs, pos, pair)
-	node.FreeLength -= 4 + len(key) + len(value)
+	node.FreeLength = node.FreeLength - (storage.CELL_CONST_SIZE + len(key) + len(value))
 	node.Dirty = true
 
 	if node.FreeLength < 0 {
-		assert.Debug(true, "Doing split", node, pos, found)
 		node, err = node.Split(b.root, &b.nodeCount, b.mng.PageSize)
 		if err != nil {
 			return false, true, err
 		}
 		return true, true, nil
 	}
-	b.mng.WriteNodeTree(node)
+	assert.Assert(node.FreeLength > 0, fmt.Sprintf("Node free bytes must be greater than zero, nodeId: %v, freeLength: %v", node.ID, node.FreeLength))
+
+	// b.mng.WriteNodeTree(node)
 	assert.Debug(true, "Upsert/ Node:", node, pos, found)
 	return true, false, nil
 }
@@ -140,7 +140,7 @@ func (b *BTree) findNode(key []byte) (*storage.Node, int, bool, error) {
 		pos, found = slices.BinarySearchFunc(node.Pairs, targetPair, func(x, k storage.Pair) int {
 			return bytes.Compare(x.Key, k.Key)
 		})
-		// node.Print()
+		log.Trace().Uint32("Node id:", node.ID).Any("Node Pairs", node.Pairs).Msg("Finding node")
 
 		// base case is to reach a leaf node return early because either we found the target or not found and have a position to insert it
 		if (node.Typ & storage.LEAF_NODE) == storage.LEAF_NODE {
@@ -151,6 +151,8 @@ func (b *BTree) findNode(key []byte) (*storage.Node, int, bool, error) {
 		// root node always live in the memory
 		if len(node.Children[pos].Pairs) == 0 {
 			var err error = nil
+
+			assert.Assert(node.Children[pos].ID <= b.nodeCount.Load(), "Page id can not be greater than the total number of node count")
 			node.Children[pos], err = b.mng.Read(node.Children[pos].ID)
 			if err != nil {
 				return nil, -1, false, err
@@ -165,6 +167,7 @@ func (b *BTree) findNode(key []byte) (*storage.Node, int, bool, error) {
 }
 
 func (b *BTree) Find(key []byte) ([]byte, error) {
+	assert.Assert(len(key) > 0 && len(key) < 65530, fmt.Sprintf("The key length must be between 0 - 65530 key: %v", string(key)))
 	if !b.open {
 		return nil, errors.New("Database was closed")
 	}
@@ -183,7 +186,7 @@ func (b *BTree) Find(key []byte) ([]byte, error) {
 }
 
 func (b *BTree) Close() error {
-	log.Println("Closed called")
+	log.Info().Msg("Closed called")
 	b.wlock.Lock()
 	defer b.wlock.Unlock()
 

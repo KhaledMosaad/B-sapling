@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"slices"
 	"strings"
 	"sync/atomic"
 
 	"github.com/nikoksr/assert-go"
+	"github.com/rs/zerolog/log"
 )
 
 type NodeType uint8
@@ -53,7 +53,7 @@ func (n *Node) page(pageSize int) (*page, error) {
 	}
 
 	nOfPairs := len(n.Pairs)
-	page.header.freeStart = uint16(nOfPairs*4) + 16
+	page.header.freeStart = uint16(nOfPairs*4) + HEADER_SIZE
 	page.header.cellCount = uint16(nOfPairs)
 	page.pointers = make([]pointer, nOfPairs)
 	page.cells = make([]cell, nOfPairs)
@@ -90,6 +90,10 @@ func (n *Node) page(pageSize int) (*page, error) {
 		page.rightMostRef = &n.Children[len(n.Pairs)].ID
 	}
 	page.header.freeEnd = uint16(endOffset)
+
+	assert.Assert(page.header.freeEnd > page.header.freeStart,
+		fmt.Sprintf("freeEnd offset of the page must be greater than the freeStart offset pageId: %v freeEnd: %v freeStart: %v",
+			page.header.pageID, page.header.freeEnd, page.header.freeStart))
 	return page, nil
 }
 
@@ -101,6 +105,7 @@ func (n *Node) page(pageSize int) (*page, error) {
 func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node, error) {
 	// Assert the input
 	assert.Assert(n.FreeLength < 0, fmt.Sprintf("Split happening on a free spaced node is forbidden %# v", n))
+	log.Trace().Uint32("Node id", n.ID).Msg("Split call")
 	// Root node case
 	if n.Typ&ROOT_NODE == ROOT_NODE {
 		// we don't have rightMostRef here but n will end up with one
@@ -114,7 +119,7 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 			Dirty:  true,
 			Pairs:  lpairs,
 			// pointers size 4 bytes , (keySize, valueSize) 4 bytes for every cell - 16 page header size - the data sizes in the pair
-			FreeLength: pageSize - 8*midpoint - HEADER_SIZE - lnodeCellsSize,
+			FreeLength: pageSize - CELL_CONST_SIZE*midpoint - HEADER_SIZE - lnodeCellsSize,
 		}
 
 		rpairs := n.Pairs[midpoint:]
@@ -125,7 +130,7 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 			Typ:        LEAF_NODE,
 			Dirty:      true,
 			Pairs:      rpairs,
-			FreeLength: pageSize - 8*(len(n.Pairs)-midpoint) - HEADER_SIZE - rnodeCellsSize,
+			FreeLength: pageSize - CELL_CONST_SIZE*(len(n.Pairs)-midpoint) - HEADER_SIZE - rnodeCellsSize,
 		}
 
 		// if the root node is internal and have to split then insert new two internal nodes between root and it's children
@@ -145,7 +150,7 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 
 		n.Children = []*Node{lnode, rnode}
 		// page header - len of key - value size (uint32) - rightMostRef
-		n.FreeLength = pageSize - HEADER_SIZE - len(n.Pairs[midpoint].Key) - 4 - 4
+		n.FreeLength = pageSize - HEADER_SIZE - len(n.Pairs[midpoint].Key) - len(n.Pairs[midpoint].Value) - CELL_CONST_SIZE - 4
 		newKey := n.Pairs[midpoint].Key
 		newValue := make([]byte, 4)
 		binary.LittleEndian.PutUint32(newValue, lnode.ID)
@@ -191,11 +196,23 @@ func (n *Node) Split(root *Node, nodeCount *atomic.Uint32, pageSize int) (*Node,
 			return bytes.Compare(x.Key, k.Key)
 		})
 
-		parent.Pairs = slices.Insert(parent.Pairs, pos, pairs[midpoint])
-
 		assert.Assert(parent.Typ&INTERNAL_NODE == INTERNAL_NODE,
 			fmt.Sprintf("Splitting non-root node must have internal parent type parent: %# v node: %# v", parent, n))
-		parent.Children = slices.Insert(parent.Children, pos, rnode)
+
+		// Handle promoting key by inserting it in the left of the parent key
+		// if the parent node is right most ref swap the exist ref to the new node and old ref be the last pair key
+		if pos == len(parent.Pairs) {
+			parent.Children = append(parent.Children, rnode)
+			rightMostRef := parent.Children[len(parent.Pairs)].ID
+			rightMostRefBytes := make([]byte, 4)
+			binary.LittleEndian.PutUint32(rightMostRefBytes, rightMostRef)
+			parent.Pairs = slices.Insert(parent.Pairs, pos, Pair{Key: pairs[midpoint].Key, Value: rightMostRefBytes})
+		} else {
+			// Check this is OK
+			parent.Pairs = slices.Insert(parent.Pairs, pos, pairs[midpoint])
+			parent.Children = slices.Insert(parent.Children, pos, rnode)
+		}
+
 		parent.Dirty = true
 		parent.FreeLength -= accumulatePairLength([]Pair{pairs[midpoint]}, 0)
 
@@ -251,7 +268,7 @@ func (n *Node) Print() error {
 	}
 
 	printedNode := builder.String()
-	log.Printf("Node Print %v  \n", printedNode)
+	log.Trace().Msg("Print node: " + printedNode)
 
 	return nil
 }

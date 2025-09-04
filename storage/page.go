@@ -2,12 +2,15 @@ package storage
 
 import (
 	"encoding/binary"
-	"log"
+	"fmt"
 
 	"github.com/KhaledMosaad/B-sapling/utils"
+	"github.com/nikoksr/assert-go"
+	"github.com/rs/zerolog/log"
 )
 
 const HEADER_SIZE = 16
+const CELL_CONST_SIZE = 8 // 4 for pointer and 4 for calculating the slot size
 
 type PageType uint8
 
@@ -18,23 +21,24 @@ const (
 )
 
 /*
- * This is a in-disk slotted pages implementation for B+Tree
- * Pages have header, offsets pointers to the cells (ordered), cells, free space, (optional) available offsets pairs (from, to)
- * Page is the node representation in the disk slotted pages looks like this:
- * +----------------+---------------------------------+
- * | PageHeader | pointer1 pointer2 pointer3 ...      |
- * +-----------+----+---------------------------------+
- * | ... pointerN |                                   |
- * +-----------+--------------------------------------+
- * |           ^ freeStart                            |
- * |                                                  |
- * |             v freeEnd                            |
- * +-------------+------------------------------------+
- * |             | dataN ...                          |
- * +-------------+------------------+-----------------+
- * |       ... data4 data3 data2 data1                |
- * +--------------------------------+-----------------+
- *
+* This is a in-disk slotted pages implementation for B+Tree
+* Pages have header, offsets pointers to the cells (ordered), cells, free space,
+* (optional) available offsets pairs (from, to)
+* Page is the node representation in the disk slotted pages looks like this:
+* +----------------+---------------------------------+
+* | PageHeader | pointer1 pointer2 pointer3 ...      |
+* +-----------+----+---------------------------------+
+* | ... pointerN |                                   |
+* +-----------+--------------------------------------+
+* |           ^ freeStart                            |
+* |                                                  |
+* |             v freeEnd                            |
+* +-------------+------------------------------------+
+* |             | dataN ...                          |
+* +-------------+------------------+-----------------+
+* |       ... data4 data3 data2 data1                |
+* +--------------------------------+-----------------+
+*
  */
 type page struct {
 	header   header
@@ -71,6 +75,10 @@ type cell struct {
 
 // write (create, update) the page in disk using Little endian byte order
 func (p *page) flush(mng *Manager) (bool, error) {
+	assert.Assert(len(p.cells) == len(p.pointers),
+		fmt.Sprintf("page cells must have same length as page pointers, pageId: %v cells length: %v pointers length: %v",
+			p.header.pageID, len(p.cells), len(p.pointers)))
+
 	buff := make([]byte, mng.PageSize)
 
 	pageOffset := int64(p.header.pageID * uint32(mng.PageSize))
@@ -120,17 +128,23 @@ func (p *page) flush(mng *Manager) (bool, error) {
 
 	// Handle the right most value for the page so that the page will have (pointers + 1) references, this is only apply for non-leaf pages
 	if p.header.typ&INTERNAL_PAGE == INTERNAL_PAGE {
+
 		// the right most reference has 4 bytes length
 		endOffset -= 4
 		binary.LittleEndian.PutUint32(buff[endOffset:], *p.rightMostRef)
+		assert.Assert(p.rightMostRef != nil, fmt.Sprintf("Right most reference in the internal page id %v is nil", p.header.pageID))
 	}
+
+	assert.Assert(p.header.freeEnd > p.header.freeStart,
+		fmt.Sprintf("freeEnd offset of the page must be greater than the freeStart offset pageId: %v freeEnd: %v freeStart: %v",
+			p.header.pageID, p.header.freeEnd, p.header.freeStart))
 
 	n, err := mng.file.WriteAt(buff, pageOffset)
 	if err != nil {
 		return false, err
 	}
 
-	log.Printf("written %v bytes to disk at pageID %v", n, p.header.pageID)
+	log.Trace().Int("bytes: ", n).Uint32("page id: ", p.header.pageID).Msg("Flush to disk")
 	return true, nil
 }
 
@@ -192,6 +206,7 @@ func read(mng *Manager, pid uint32) (*page, error) {
 	// Any read internal page should fetch the right most value
 	if page.header.typ&INTERNAL_PAGE == INTERNAL_PAGE {
 		temp := binary.LittleEndian.Uint32(buff[page.header.freeEnd:])
+		assert.Assert(temp != 0, fmt.Sprintf("Right most reference in the internal page id %v is 0", page.header.pageID))
 		page.rightMostRef = &temp
 	}
 	return page, nil
@@ -216,7 +231,7 @@ func (p *page) toNode() (*Node, error) {
 	}
 
 	if (nod.Typ & INTERNAL_NODE) == INTERNAL_NODE {
-		// assert that the p.rightMostRef is not nil or 0
+		assert.Assert(p.rightMostRef != nil, fmt.Sprintf("Right most reference in the internal page id %v is nil", p.header.pageID))
 		nod.Children = make([]*Node, len(p.cells)+1)
 		nod.Children[len(p.cells)] = &Node{ID: *p.rightMostRef}
 	}

@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"syscall"
+
+	"github.com/nikoksr/assert-go"
+	"github.com/rs/zerolog/log"
 )
 
 type StorageManager interface {
@@ -108,6 +111,7 @@ func (mng *Manager) Read(nid uint32) (*Node, error) {
 	}
 
 	node, err := page.toNode()
+	log.Trace().Any("Node", node).Msg("Reading from disk node")
 
 	if err != nil {
 		return nil, err
@@ -126,6 +130,7 @@ func (mng *Manager) Split(n *Node) (*Node, error) {
 
 // Run basic DFS on the tree and write dirty pages starting from n to the end of the tree
 func (mng *Manager) WriteNodeTree(n *Node) error {
+	assert.Assert(n.FreeLength > 0, fmt.Sprintf("Node free bytes must be greater than zero, nodeId: %v, freeLength: %v", n.ID, n.FreeLength))
 	if n.Dirty {
 		page, err := n.page(mng.PageSize)
 		if err != nil {
